@@ -1,5 +1,5 @@
 // Backend and Bot Server for Pharmacy Booking System
-
+require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
