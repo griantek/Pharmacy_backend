@@ -55,6 +55,7 @@ const createTables = () => {
       status TEXT DEFAULT 'Pending',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       prescription_photo TEXT,
+      total_price REAL,
       FOREIGN KEY (medicine_id) REFERENCES medicines(id)
     );`);
 
@@ -131,47 +132,42 @@ app.post('/order', upload.single('prescription'), (req, res) => {
   const { user_name, user_address, phone_number, medicine_id, quantity } = req.body;
   const prescriptionPhoto = req.file ? req.file.path : null;
 
-  // Check if the medicine requires a prescription
-  db.get('SELECT category_id, stock FROM medicines WHERE id = ?', [medicine_id], (err, row) => {
+  // Check medicine price and calculate total
+  db.get('SELECT category_id, stock, price FROM medicines WHERE id = ?', [medicine_id], (err, medicine) => {
     if (err) {
-      console.error('Error checking medicine category:', err.message);
-      return res.status(500).send('Error checking medicine category.');
+      console.error('Error checking medicine:', err.message);
+      return res.status(500).send('Error checking medicine.');
     }
 
-    if (!row) {
+    if (!medicine) {
       return res.status(404).send('Medicine not found.');
     }
 
-    if (row.category_id === 2 && !prescriptionPhoto) {
-      return res.status(400).send('Prescription photo is required for this medicine.');
-    }
+    const total_price = medicine.price * quantity;
 
-    if (row.stock < quantity) {
-      return res.status(400).send('Insufficient stock.');
-    }
-
-    // Insert the order into the database
+    // Insert order with total price
     db.run(
-      `INSERT INTO orders (user_name, user_address, phone_number, medicine_id, quantity, status, prescription_photo) VALUES (?, ?, ?, ?, ?, 'Pending', ?)`,
-      [user_name, user_address, phone_number, medicine_id, quantity, prescriptionPhoto],
+      `INSERT INTO orders (user_name, user_address, phone_number, medicine_id, quantity, status, prescription_photo, total_price) 
+       VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?)`,
+      [user_name, user_address, phone_number, medicine_id, quantity, prescriptionPhoto, total_price],
       function (err) {
         if (err) {
           console.error('Error placing order:', err.message);
           return res.status(500).send('Error placing order.');
         }
-
-        // Decrease the stock of the medicine
+        // Update stock
         db.run('UPDATE medicines SET stock = stock - ? WHERE id = ?', [quantity, medicine_id], (err) => {
           if (err) {
             console.error('Error updating stock:', err.message);
             return res.status(500).send('Error updating stock.');
           }
-          res.json({ success: true, orderId: this.lastID, prescription: prescriptionPhoto });
+          res.json({ success: true, orderId: this.lastID });
         });
       }
     );
   });
 });
+
 
 // Update order status
 app.put('/order/:orderId/status', (req, res) => {
@@ -264,65 +260,56 @@ app.patch('/order/:orderId', upload.single('prescription'), (req, res) => {
   const { user_name, user_address, phone_number, medicine_id, quantity } = req.body;
   const prescriptionPhoto = req.file ? req.file.path : null;
 
-  // Fetch the existing order details
   db.get('SELECT * FROM orders WHERE id = ?', [orderId], (err, order) => {
     if (err) {
-      console.error('Error fetching order details:', err.message);
-      return res.status(500).send('Error fetching order details.');
+      console.error('Error fetching order:', err.message);
+      return res.status(500).send('Error fetching order.');
     }
 
-    if (!order) {
-      return res.status(404).send('Order not found.');
-    }
+    if (!order) return res.status(404).send('Order not found.');
+    if (order.status !== 'Pending') return res.status(400).send('Only pending orders can be modified.');
 
-    if (order.status !== 'Pending') {
-      return res.status(400).send('Only orders with "Pending" status can be modified.');
-    }
+    // Get new medicine price if medicine changed
+    db.get('SELECT price FROM medicines WHERE id = ?', [medicine_id], (err, medicine) => {
+      if (err) return res.status(500).send('Error fetching medicine.');
+      if (!medicine) return res.status(404).send('Medicine not found.');
 
-    // Update the stock if the medicine_id or quantity has changed
-    if (order.medicine_id !== medicine_id || order.quantity !== quantity) {
-      // Restore the stock of the old medicine
-      db.run('UPDATE medicines SET stock = stock + ? WHERE id = ?', [order.quantity, order.medicine_id], (err) => {
-        if (err) {
-          console.error('Error restoring stock:', err.message);
-          return res.status(500).send('Error restoring stock.');
-        }
+      const total_price = medicine.price * quantity;
 
-        // Decrease the stock of the new medicine
-        db.run('UPDATE medicines SET stock = stock - ? WHERE id = ?', [quantity, medicine_id], (err) => {
-          if (err) {
-            console.error('Error updating stock:', err.message);
-            return res.status(500).send('Error updating stock.');
-          }
+      if (order.medicine_id !== medicine_id || order.quantity !== quantity) {
+        // Update stock for both old and new medicine
+        db.run('UPDATE medicines SET stock = stock + ? WHERE id = ?', [order.quantity, order.medicine_id], (err) => {
+          if (err) return res.status(500).send('Error updating old stock.');
 
-          // Update the order details
-          db.run(
-            `UPDATE orders SET user_name = ?, user_address = ?, phone_number = ?, medicine_id = ?, quantity = ?, prescription_photo = ? WHERE id = ?`,
-            [user_name, user_address, phone_number, medicine_id, quantity, prescriptionPhoto || order.prescription_photo, orderId],
-            function (err) {
-              if (err) {
-                console.error('Error updating order:', err.message);
-                return res.status(500).send('Error updating order.');
+          db.run('UPDATE medicines SET stock = stock - ? WHERE id = ?', [quantity, medicine_id], (err) => {
+            if (err) return res.status(500).send('Error updating new stock.');
+            // Update order with new total price
+            db.run(
+              `UPDATE orders SET user_name = ?, user_address = ?, phone_number = ?, medicine_id = ?, 
+               quantity = ?, prescription_photo = ?, total_price = ? WHERE id = ?`,
+              [user_name, user_address, phone_number, medicine_id, quantity, 
+               prescriptionPhoto || order.prescription_photo, total_price, orderId],
+              (err) => {
+                if (err) return res.status(500).send('Error updating order.');
+                res.json({ success: true });
               }
-              res.json({ success: true });
-            }
-          );
+            );
+          });
         });
-      });
-    } else {
-      // Update the order details without changing the stock
-      db.run(
-        `UPDATE orders SET user_name = ?, user_address = ?, phone_number = ?, prescription_photo = ? WHERE id = ?`,
-        [user_name, user_address, phone_number, prescriptionPhoto || order.prescription_photo, orderId],
-        function (err) {
-          if (err) {
-            console.error('Error updating order:', err.message);
-            return res.status(500).send('Error updating order.');
+      } else {
+        // Update order without stock changes
+        db.run(
+          `UPDATE orders SET user_name = ?, user_address = ?, phone_number = ?, 
+           prescription_photo = ?, total_price = ? WHERE id = ?`,
+          [user_name, user_address, phone_number, 
+           prescriptionPhoto || order.prescription_photo, total_price, orderId],
+          (err) => {
+            if (err) return res.status(500).send('Error updating order.');
+            res.json({ success: true });
           }
-          res.json({ success: true });
-        }
-      );
-    }
+        );
+      }
+    });
   });
 });
 
