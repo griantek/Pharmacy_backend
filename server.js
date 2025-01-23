@@ -181,17 +181,24 @@ app.put('/order/:orderId/status', (req, res) => {
     res.json({ success: true });
   });
 });
-
-// Fetch order details
+// Fetch order details with medicine info
 app.get('/order/:orderId', (req, res) => {
   const { orderId } = req.params;
-  db.get('SELECT * FROM orders WHERE id = ?', [orderId], (err, row) => {
-    if (err) {
-      console.error('Error fetching order details:', err.message);
-      return res.status(500).send('Error fetching order details.');
-    }
-    res.json(row);
-  });
+  db.get(`
+    SELECT orders.*, 
+           medicines.name as medicine_name, 
+           medicines.price as medicine_price
+    FROM orders 
+    JOIN medicines ON orders.medicine_id = medicines.id 
+    WHERE orders.id = ?`, 
+    [orderId], 
+    (err, row) => {
+      if (err) {
+        console.error('Error fetching order details:', err.message);
+        return res.status(500).send('Error fetching order details.');
+      }
+      res.json(row);
+    });
 });
 
 // Fetch all medicines
