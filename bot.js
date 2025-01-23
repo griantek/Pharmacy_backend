@@ -6,7 +6,7 @@ const axios = require('axios');
 const mysql = require('mysql2');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(bodyParser.json());
@@ -25,15 +25,13 @@ db.connect(err => {
 });
 
 // WhatsApp Meta API Configuration
-const WHATSAPP_API_URL = 'https://graph.facebook.com/v15.0';
-const WHATSAPP_ACCESS_TOKEN = 'your-meta-api-access-token';
-const PHONE_NUMBER_ID = 'your-phone-number-id';
+const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 
 // WhatsApp Message Sender with Buttons
 const sendMessageWithButtons = async (phoneNumber, headerText, bodyText, buttons) => {
   try {
     await axios.post(
-      `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
+      `${process.env.WHATSAPP_API_URL}`,
       {
         messaging_product: 'whatsapp',
         to: phoneNumber,
