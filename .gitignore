@@ -1,4 +1,6 @@
 node_modules/
+uploads/
 Pharmacy_Booking_System_Updated.docx
 Pharmacy_Booking_System.docx
 .env
+pharmacy_booking.db

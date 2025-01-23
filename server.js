@@ -4,7 +4,10 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
-
+const multer = require('multer');
+const path = require('path');
+const jwt = require('jsonwebtoken');
+const secretKey = '123';
 const app = express();
 const PORT = process.env.PORT || 4000;
 
@@ -46,10 +49,12 @@ const createTables = () => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_name TEXT NOT NULL,
       user_address TEXT NOT NULL,
+      phone_number TEXT NOT NULL,
       medicine_id INTEGER NOT NULL,
       quantity INTEGER NOT NULL,
       status TEXT DEFAULT 'Pending',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      prescription_photo TEXT,
       FOREIGN KEY (medicine_id) REFERENCES medicines(id)
     );`);
 
@@ -58,6 +63,31 @@ const createTables = () => {
 };
 
 createTables();
+
+// Configure Multer for prescription uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, './uploads/');
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}-${file.originalname}`);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // Limit file size to 5 MB
+  fileFilter: (req, file, cb) => {
+    const fileTypes = /jpeg|jpg|png|gif/;
+    const extName = fileTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimeType = fileTypes.test(file.mimetype);
+    if (extName && mimeType) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Only images are allowed (JPEG, PNG, GIF).'));
+    }
+  },
+});
 
 // Routes
 
@@ -97,19 +127,50 @@ app.get('/availability/:medicineId', (req, res) => {
 });
 
 // Place an order
-app.post('/order', (req, res) => {
-  const { user_name, user_address, medicine_id, quantity } = req.body;
-  db.run(
-    `INSERT INTO orders (user_name, user_address, medicine_id, quantity, status) VALUES (?, ?, ?, ?, 'Pending')`,
-    [user_name, user_address, medicine_id, quantity],
-    function (err) {
-      if (err) {
-        console.error('Error placing order:', err.message);
-        return res.status(500).send('Error placing order.');
-      }
-      res.json({ success: true, orderId: this.lastID });
+app.post('/order', upload.single('prescription'), (req, res) => {
+  const { user_name, user_address, phone_number, medicine_id, quantity } = req.body;
+  const prescriptionPhoto = req.file ? req.file.path : null;
+
+  // Check if the medicine requires a prescription
+  db.get('SELECT category_id, stock FROM medicines WHERE id = ?', [medicine_id], (err, row) => {
+    if (err) {
+      console.error('Error checking medicine category:', err.message);
+      return res.status(500).send('Error checking medicine category.');
     }
-  );
+
+    if (!row) {
+      return res.status(404).send('Medicine not found.');
+    }
+
+    if (row.category_id === 2 && !prescriptionPhoto) {
+      return res.status(400).send('Prescription photo is required for this medicine.');
+    }
+
+    if (row.stock < quantity) {
+      return res.status(400).send('Insufficient stock.');
+    }
+
+    // Insert the order into the database
+    db.run(
+      `INSERT INTO orders (user_name, user_address, phone_number, medicine_id, quantity, status, prescription_photo) VALUES (?, ?, ?, ?, ?, 'Pending', ?)`,
+      [user_name, user_address, phone_number, medicine_id, quantity, prescriptionPhoto],
+      function (err) {
+        if (err) {
+          console.error('Error placing order:', err.message);
+          return res.status(500).send('Error placing order.');
+        }
+
+        // Decrease the stock of the medicine
+        db.run('UPDATE medicines SET stock = stock - ? WHERE id = ?', [quantity, medicine_id], (err) => {
+          if (err) {
+            console.error('Error updating stock:', err.message);
+            return res.status(500).send('Error updating stock.');
+          }
+          res.json({ success: true, orderId: this.lastID, prescription: prescriptionPhoto });
+        });
+      }
+    );
+  });
 });
 
 // Update order status
@@ -137,6 +198,266 @@ app.get('/order/:orderId', (req, res) => {
   });
 });
 
+// Fetch all medicines
+app.get('/medicines', (req, res) => {
+  db.all('SELECT * FROM medicines', [], (err, rows) => {
+    if (err) {
+      console.error('Error fetching medicines:', err.message);
+      return res.status(500).send('Error fetching medicines.');
+    }
+    res.json(rows);
+  });
+});
+// Fetch medicine details by ID
+app.get('/medicine/:medicineId', (req, res) => {
+  const { medicineId } = req.params;
+  db.get('SELECT * FROM medicines WHERE id = ?', [medicineId], (err, row) => {
+    if (err) {
+      console.error('Error fetching medicine details:', err.message);
+      return res.status(500).send('Error fetching medicine details.');
+    }
+    if (!row) {
+      return res.status(404).send('Medicine not found.');
+    }
+    res.json(row);
+  });
+});
+// Cancel an order
+app.delete('/order/:orderId', (req, res) => {
+  const { orderId } = req.params;
+
+  // Get the order details
+  db.get('SELECT medicine_id, quantity FROM orders WHERE id = ?', [orderId], (err, row) => {
+    if (err) {
+      console.error('Error fetching order details:', err.message);
+      return res.status(500).send('Error fetching order details.');
+    }
+
+    if (!row) {
+      return res.status(404).send('Order not found.');
+    }
+
+    const { medicine_id, quantity } = row;
+
+    // Delete the order
+    db.run('DELETE FROM orders WHERE id = ?', [orderId], function (err) {
+      if (err) {
+        console.error('Error deleting order:', err.message);
+        return res.status(500).send('Error deleting order.');
+      }
+
+      // Restore the stock of the medicine
+      db.run('UPDATE medicines SET stock = stock + ? WHERE id = ?', [quantity, medicine_id], (err) => {
+        if (err) {
+          console.error('Error updating stock:', err.message);
+          return res.status(500).send('Error updating stock.');
+        }
+        res.json({ success: true });
+      });
+    });
+  });
+});
+
+// Update order details
+app.patch('/order/:orderId', upload.single('prescription'), (req, res) => {
+  const { orderId } = req.params;
+  const { user_name, user_address, phone_number, medicine_id, quantity } = req.body;
+  const prescriptionPhoto = req.file ? req.file.path : null;
+
+  // Fetch the existing order details
+  db.get('SELECT * FROM orders WHERE id = ?', [orderId], (err, order) => {
+    if (err) {
+      console.error('Error fetching order details:', err.message);
+      return res.status(500).send('Error fetching order details.');
+    }
+
+    if (!order) {
+      return res.status(404).send('Order not found.');
+    }
+
+    if (order.status !== 'Pending') {
+      return res.status(400).send('Only orders with "Pending" status can be modified.');
+    }
+
+    // Update the stock if the medicine_id or quantity has changed
+    if (order.medicine_id !== medicine_id || order.quantity !== quantity) {
+      // Restore the stock of the old medicine
+      db.run('UPDATE medicines SET stock = stock + ? WHERE id = ?', [order.quantity, order.medicine_id], (err) => {
+        if (err) {
+          console.error('Error restoring stock:', err.message);
+          return res.status(500).send('Error restoring stock.');
+        }
+
+        // Decrease the stock of the new medicine
+        db.run('UPDATE medicines SET stock = stock - ? WHERE id = ?', [quantity, medicine_id], (err) => {
+          if (err) {
+            console.error('Error updating stock:', err.message);
+            return res.status(500).send('Error updating stock.');
+          }
+
+          // Update the order details
+          db.run(
+            `UPDATE orders SET user_name = ?, user_address = ?, phone_number = ?, medicine_id = ?, quantity = ?, prescription_photo = ? WHERE id = ?`,
+            [user_name, user_address, phone_number, medicine_id, quantity, prescriptionPhoto || order.prescription_photo, orderId],
+            function (err) {
+              if (err) {
+                console.error('Error updating order:', err.message);
+                return res.status(500).send('Error updating order.');
+              }
+              res.json({ success: true });
+            }
+          );
+        });
+      });
+    } else {
+      // Update the order details without changing the stock
+      db.run(
+        `UPDATE orders SET user_name = ?, user_address = ?, phone_number = ?, prescription_photo = ? WHERE id = ?`,
+        [user_name, user_address, phone_number, prescriptionPhoto || order.prescription_photo, orderId],
+        function (err) {
+          if (err) {
+            console.error('Error updating order:', err.message);
+            return res.status(500).send('Error updating order.');
+          }
+          res.json({ success: true });
+        }
+      );
+    }
+  });
+});
+
+// Admin login
+app.post('/admin/login', (req, res) => {
+  const { username, password } = req.body;
+
+  // Replace with your actual admin credentials validation
+  if (username === 'admin' && password === '1234') {
+    const token = jwt.sign({ username }, secretKey, { expiresIn: '1h' });
+    res.json({ token });
+  } else {
+    res.status(401).json({ error: 'Invalid username or password' });
+  }
+});
+
+// Middleware to verify admin token
+const verifyAdminToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) {
+    return res.status(401).send('Unauthorized');
+  }
+
+  jwt.verify(token, secretKey, (err, decoded) => {
+    if (err) {
+      return res.status(401).send('Unauthorized');
+    }
+    req.user = decoded;
+    next();
+  });
+};
+
+// Fetch admin dashboard stats
+app.get('/admin/stats', verifyAdminToken, (req, res) => {
+  const stats = {};
+
+  db.serialize(() => {
+    db.get('SELECT COUNT(*) AS totalOrders FROM orders', (err, row) => {
+      if (err) {
+        console.error('Error fetching total orders:', err.message);
+        return res.status(500).send('Error fetching total orders.');
+      }
+      stats.totalOrders = row.totalOrders;
+
+      db.get('SELECT SUM(quantity * price) AS totalRevenue FROM orders JOIN medicines ON orders.medicine_id = medicines.id', (err, row) => {
+        if (err) {
+          console.error('Error fetching total revenue:', err.message);
+          return res.status(500).send('Error fetching total revenue.');
+        }
+        stats.totalRevenue = row.totalRevenue || 0;
+
+        db.all('SELECT orders.id, orders.user_name, orders.created_at, medicines.name AS medicine_name, (orders.quantity * medicines.price) AS total_price, orders.status FROM orders JOIN medicines ON orders.medicine_id = medicines.id ORDER BY orders.created_at DESC LIMIT 10', (err, rows) => {
+          if (err) {
+            console.error('Error fetching recent orders:', err.message);
+            return res.status(500).send('Error fetching recent orders.');
+          }
+          stats.recentOrders = rows;
+          res.json(stats);
+        });
+      });
+    });
+  });
+});
+
+// Fetch admin orders
+app.get('/admin/orders', verifyAdminToken, (req, res) => {
+  db.all('SELECT orders.id, orders.user_name, orders.user_address, orders.phone_number, medicines.name AS medicine_name, orders.quantity, (orders.quantity * medicines.price) AS total_price, orders.status, orders.created_at FROM orders JOIN medicines ON orders.medicine_id = medicines.id ORDER BY orders.created_at DESC', (err, rows) => {
+    if (err) {
+      console.error('Error fetching orders:', err.message);
+      return res.status(500).send('Error fetching orders.');
+    }
+    res.json(rows);
+  });
+});
+
+// Cancel an order
+app.delete('/admin/orders/:orderId', verifyAdminToken, (req, res) => {
+  const { orderId } = req.params;
+
+  db.run('UPDATE orders SET status = ? WHERE id = ?', ['cancelled', orderId], function(err) {
+    if (err) {
+      console.error('Error cancelling order:', err.message);
+      return res.status(500).send('Error cancelling order.');
+    }
+    res.json({ success: true });
+  });
+});
+// Fetch admin medicines
+// Fetch admin medicines with categories
+app.get('/admin/medicines', verifyAdminToken, (req, res) => {
+  db.all('SELECT medicines.*, categories.name AS category_name FROM medicines JOIN categories ON medicines.category_id = categories.id ORDER BY medicines.name', (err, rows) => {
+    if (err) {
+      console.error('Error fetching medicines:', err.message);
+      return res.status(500).send('Error fetching medicines.');
+    }
+    res.json(rows);
+  });
+});
+
+// Add a new medicine with category
+app.post('/admin/medicines', verifyAdminToken, (req, res) => {
+  const { name, description, price, stock, category_id } = req.body;
+  db.run('INSERT INTO medicines (name, description, price, stock, category_id) VALUES (?, ?, ?, ?, ?)', [name, description, price, stock, category_id], function(err) {
+    if (err) {
+      console.error('Error adding medicine:', err.message);
+      return res.status(500).send('Error adding medicine.');
+    }
+    res.json({ id: this.lastID });
+  });
+});
+
+// Update a medicine with category
+app.patch('/admin/medicines/:medicineId', verifyAdminToken, (req, res) => {
+  const { medicineId } = req.params;
+  const { name, description, price, stock, category_id } = req.body;
+  db.run('UPDATE medicines SET name = ?, description = ?, price = ?, stock = ?, category_id = ? WHERE id = ?', [name, description, price, stock, category_id, medicineId], function(err) {
+    if (err) {
+      console.error('Error updating medicine:', err.message);
+      return res.status(500).send('Error updating medicine.');
+    }
+    res.json({ success: true });
+  });
+});
+
+// Delete a medicine
+app.delete('/admin/medicines/:medicineId', verifyAdminToken, (req, res) => {
+  const { medicineId } = req.params;
+  db.run('DELETE FROM medicines WHERE id = ?', [medicineId], function(err) {
+    if (err) {
+      console.error('Error deleting medicine:', err.message);
+      return res.status(500).send('Error deleting medicine.');
+    }
+    res.json({ success: true });
+  });
+});
 // Start the server
 app.listen(PORT, () => {
   console.log(`Pharmacy app backend running on port ${PORT}`);
