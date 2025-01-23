@@ -25,19 +25,32 @@ db.connect(err => {
 });
 
 // WhatsApp Meta API Configuration
-const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0';
+const WHATSAPP_API_URL = 'https://graph.facebook.com/v15.0';
 const WHATSAPP_ACCESS_TOKEN = 'your-meta-api-access-token';
 const PHONE_NUMBER_ID = 'your-phone-number-id';
 
-// WhatsApp Message Sender
-const sendMessage = async (phoneNumber, message) => {
+// WhatsApp Message Sender with Buttons
+const sendMessageWithButtons = async (phoneNumber, headerText, bodyText, buttons) => {
   try {
     await axios.post(
       `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: 'whatsapp',
         to: phoneNumber,
-        text: { body: message }
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          header: {
+            type: 'text',
+            text: headerText
+          },
+          body: {
+            text: bodyText
+          },
+          action: {
+            buttons: buttons
+          }
+        }
       },
       {
         headers: {
@@ -46,9 +59,9 @@ const sendMessage = async (phoneNumber, message) => {
         }
       }
     );
-    console.log(`Message sent to ${phoneNumber}`);
+    console.log(`Buttons sent to ${phoneNumber}`);
   } catch (error) {
-    console.error('Error sending message:', error.response?.data || error.message);
+    console.error('Error sending buttons:', error.response?.data || error.message);
   }
 };
 
@@ -63,13 +76,23 @@ app.post('/webhook', (req, res) => {
       const msgBody = message.text?.body.toLowerCase();
 
       if (msgBody === 'hi') {
-        await sendMessage(from, 'Welcome to Pharmacy Bot! Select an option:\n1. Order Medicine\n2. Contact Support');
-      } else if (msgBody === '1') {
-        await sendMessage(from, 'Visit our web application to order medicines: https://pharmacy-booking.com');
-      } else if (msgBody === '2') {
-        await sendMessage(from, 'Contact our support team at support@pharmacy-booking.com or call +1234567890.');
+        await sendMessageWithButtons(from, 'Welcome to Pharmacy Bot!', 'Select an option:', [
+          { type: 'reply', reply: { id: 'order_medicine', title: 'Order Medicine' } },
+          { type: 'reply', reply: { id: 'contact_support', title: 'Contact Support' } }
+        ]);
+      } else if (message.type === 'interactive' && message.interactive.button_reply.id === 'order_medicine') {
+        await sendMessageWithButtons(from, 'Order Medicine', 'Visit our web application to order medicines:', [
+          { type: 'url', reply: { id: 'web_link', title: 'Open Web App', url: 'https://pharmacy-booking.com' } }
+        ]);
+      } else if (message.type === 'interactive' && message.interactive.button_reply.id === 'contact_support') {
+        await sendMessageWithButtons(from, 'Contact Support', 'You can reach us via:', [
+          { type: 'reply', reply: { id: 'email_support', title: 'Email Support' } },
+          { type: 'reply', reply: { id: 'phone_support', title: 'Phone Support' } }
+        ]);
       } else {
-        await sendMessage(from, 'Sorry, I did not understand that. Please reply with "Hi" to start over.');
+        await sendMessageWithButtons(from, 'Invalid Option', 'Sorry, I did not understand that. Please try again:', [
+          { type: 'reply', reply: { id: 'restart', title: 'Start Over' } }
+        ]);
       }
     });
   }
