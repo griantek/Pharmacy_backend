@@ -202,6 +202,17 @@ const createTables = () => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL,
+      delivery_boy_id INTEGER NOT NULL,
+      rating INTEGER NOT NULL,
+      comment TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (order_id) REFERENCES orders(id),
+      FOREIGN KEY (delivery_boy_id) REFERENCES delivery_boys(id)
+    )`);
+
     console.log('Tables created or already exist.');
   });
 };
@@ -774,6 +785,41 @@ app.get('/delivery/current-order', verifyDeliveryToken, (req, res) => {
   });
 });
 
+// Add feedback endpoints
+app.post('/api/feedback', async (req, res) => {
+  const { orderId, deliveryBoyId, rating, comment } = req.body;
+
+  db.run(
+    'INSERT INTO feedback (order_id, delivery_boy_id, rating, comment) VALUES (?, ?, ?, ?)',
+    [orderId, deliveryBoyId, rating, comment],
+    function(err) {
+      if (err) {
+        console.error('Error saving feedback:', err);
+        return res.status(500).json({ error: 'Failed to save feedback' });
+      }
+      res.json({ success: true });
+    }
+  );
+});
+
+app.get('/admin/feedbacks', verifyAdminToken, (req, res) => {
+  db.all(`
+    SELECT 
+      f.*,
+      d.name as delivery_boy_name,
+      o.status as order_status
+    FROM feedback f
+    JOIN delivery_boys d ON f.delivery_boy_id = d.id
+    JOIN orders o ON f.order_id = o.id
+    ORDER BY f.created_at DESC
+  `, (err, rows) => {
+    if (err) {
+      console.error('Error fetching feedbacks:', err.message);
+      return res.status(500).send('Error fetching feedbacks');
+    }
+    res.json(rows);
+  });
+});
 // Start the server
 app.listen(PORT, () => {
   console.log(`Pharmacy app backend running on port ${PORT}`);
