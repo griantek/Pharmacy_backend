@@ -84,6 +84,10 @@ app.put('/delivery/orders/:orderId/status', verifyDeliveryToken, (req, res) => {
     if (status === 'delivered' && order.payment_status !== 'paid') {
       return res.status(400).send('Cannot mark as delivered until payment is received');
     }
+    if (status === 'delivered') {
+      db.run('UPDATE delivery_boys SET current_order_id = NULL WHERE current_order_id = ?', 
+        [orderId]);
+    }
 
     db.run('UPDATE orders SET status = ? WHERE id = ?', [status, orderId], (err) => {
       if (err) {
@@ -192,6 +196,7 @@ const createTables = () => {
       password TEXT NOT NULL,
       name TEXT NOT NULL,
       phone TEXT NOT NULL,
+      current_order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );`);
 
@@ -627,7 +632,19 @@ app.put('/order/:orderId/payment-status', verifyAdminToken, (req, res) => {
 
 // Get all delivery boys
 app.get('/admin/delivery-boys', verifyAdminToken, (req, res) => {
-  db.all('SELECT id, username, name, phone FROM delivery_boys', (err, rows) => {
+  db.all(`
+    SELECT 
+      d.id, 
+      d.username, 
+      d.name, 
+      d.phone,
+      d.current_order_id,
+      o.status as order_status,
+      o.user_name as customer_name,
+      o.user_address as delivery_address
+    FROM delivery_boys d
+    LEFT JOIN orders o ON d.current_order_id = o.id
+  `, (err, rows) => {
     if (err) {
       console.error('Error fetching delivery boys:', err.message);
       return res.status(500).send('Error fetching delivery boys');
@@ -696,6 +713,22 @@ app.delete('/admin/delivery-boys/:id', verifyAdminToken, (req, res) => {
     }
     res.json({ success: true });
   });
+});
+
+// Add endpoint to assign order to delivery boy
+app.put('/admin/delivery-boys/:id/assign-order', verifyAdminToken, (req, res) => {
+  const { id } = req.params;
+  const { orderId } = req.body;
+
+  db.run('UPDATE delivery_boys SET current_order_id = ? WHERE id = ?', 
+    [orderId, id], 
+    function(err) {
+      if (err) {
+        console.error('Error assigning order:', err.message);
+        return res.status(500).send('Error assigning order');
+      }
+      res.json({ success: true });
+    });
 });
 
 // Start the server
