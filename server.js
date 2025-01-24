@@ -32,6 +32,58 @@ const verifyAdminToken = (req, res, next) => {
     next();
   });
 };
+
+// Add delivery boy verification middleware
+const verifyDeliveryToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).send('Unauthorized');
+
+  jwt.verify(token, secretKey, (err, decoded) => {
+    if (err || decoded.role !== 'delivery') {
+      return res.status(401).send('Unauthorized');
+    }
+    req.user = decoded;
+    next();
+  });
+};
+
+// Add delivery orders endpoint
+app.get('/delivery/orders', verifyDeliveryToken, (req, res) => {
+  db.all(`
+    SELECT 
+      orders.*,
+      medicines.name as medicine_name,
+      medicines.price as medicine_price
+    FROM orders 
+    JOIN medicines ON orders.medicine_id = medicines.id
+    WHERE orders.status IN ('verified', 'dispatched')
+    ORDER BY orders.created_at DESC
+  `, [], (err, rows) => {
+    if (err) {
+      console.error('Error fetching delivery orders:', err.message);
+      return res.status(500).send('Error fetching orders');
+    }
+    res.json(rows);
+  });
+});
+
+// Add delivery status update endpoint
+app.put('/delivery/orders/:orderId/status', verifyDeliveryToken, (req, res) => {
+  const { orderId } = req.params;
+  const { status } = req.body;
+  
+  if (!['dispatched', 'delivered'].includes(status)) {
+    return res.status(400).send('Invalid status');
+  }
+
+  db.run('UPDATE orders SET status = ? WHERE id = ?', [status, orderId], (err) => {
+    if (err) {
+      console.error('Error updating order status:', err.message);
+      return res.status(500).send('Error updating status');
+    }
+    res.json({ success: true });
+  });
+});
 // WhatsApp messaging endpoints
 app.post('/send-whatsapp-message', verifyAdminToken, async (req, res) => {
   const { phone, message } = req.body;
