@@ -18,7 +18,20 @@ app.use(bodyParser.json());
 
 const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 
+const verifyAdminToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) {
+    return res.status(401).send('Unauthorized');
+  }
 
+  jwt.verify(token, secretKey, (err, decoded) => {
+    if (err) {
+      return res.status(401).send('Unauthorized');
+    }
+    req.user = decoded;
+    next();
+  });
+};
 // WhatsApp messaging endpoints
 app.post('/send-whatsapp-message', verifyAdminToken, async (req, res) => {
   const { phone, message } = req.body;
@@ -367,20 +380,7 @@ app.post('/admin/login', (req, res) => {
 });
 
 // Middleware to verify admin token
-const verifyAdminToken = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) {
-    return res.status(401).send('Unauthorized');
-  }
 
-  jwt.verify(token, secretKey, (err, decoded) => {
-    if (err) {
-      return res.status(401).send('Unauthorized');
-    }
-    req.user = decoded;
-    next();
-  });
-};
 
 // Fetch admin dashboard stats
 app.get('/admin/stats', verifyAdminToken, (req, res) => {
