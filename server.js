@@ -105,6 +105,16 @@ const createTables = () => {
       FOREIGN KEY (medicine_id) REFERENCES medicines(id)
     );`);
 
+    // Add to existing tables creation
+    db.run(`CREATE TABLE IF NOT EXISTS delivery_boys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
+      name TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );`);
+
     console.log('Tables created or already exist.');
   });
 };
@@ -136,7 +146,27 @@ const upload = multer({
   },
 });
 
-// Routes
+app.post('/delivery/login', async (req, res) => {
+  const { username, password } = req.body;
+
+  db.get('SELECT * FROM delivery_boys WHERE username = ?', [username], (err, user) => {
+    if (err) {
+      return res.status(500).send('Error during authentication');
+    }
+
+    if (!user || user.password !== password) {
+      return res.status(401).send('Invalid credentials');
+    }
+
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: 'delivery' },
+      secretKey,
+      { expiresIn: '24h' }
+    );
+
+    res.json({ token, user: { id: user.id, name: user.name, phone: user.phone } });
+  });
+});
 
 // Fetch categories
 app.get('/categories', (req, res) => {
