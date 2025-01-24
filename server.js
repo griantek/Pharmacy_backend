@@ -56,6 +56,8 @@ const createTables = () => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       prescription_photo TEXT,
       total_price REAL,
+      payment_status TEXT DEFAULT 'pending',
+      prescription_verified BOOLEAN DEFAULT false,
       FOREIGN KEY (medicine_id) REFERENCES medicines(id)
     );`);
 
@@ -448,6 +450,35 @@ app.delete('/admin/medicines/:medicineId', verifyAdminToken, (req, res) => {
     if (err) {
       console.error('Error deleting medicine:', err.message);
       return res.status(500).send('Error deleting medicine.');
+    }
+    res.json({ success: true });
+  });
+});
+
+// Add prescription verification endpoint
+app.put('/order/:orderId/verify-prescription', verifyAdminToken, (req, res) => {
+  const { orderId } = req.params;
+  db.run('UPDATE orders SET prescription_verified = true WHERE id = ?', [orderId], (err) => {
+    if (err) {
+      console.error('Error verifying prescription:', err.message);
+      return res.status(500).send('Error verifying prescription.');
+    }
+    res.json({ success: true });
+  });
+});
+// Add payment status update endpoint
+app.put('/order/:orderId/payment-status', verifyAdminToken, (req, res) => {
+  const { orderId } = req.params;
+  const { status } = req.body;
+  
+  if (!['pending', 'paid'].includes(status)) {
+    return res.status(400).send('Invalid payment status');
+  }
+
+  db.run('UPDATE orders SET payment_status = ? WHERE id = ?', [status, orderId], (err) => {
+    if (err) {
+      console.error('Error updating payment status:', err.message);
+      return res.status(500).send('Error updating payment status.');
     }
     res.json({ success: true });
   });
