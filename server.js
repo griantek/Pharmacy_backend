@@ -13,6 +13,8 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 // Middleware
+
+app.use('/uploads', express.static('uploads'));
 app.use(cors());
 app.use(bodyParser.json());
 
