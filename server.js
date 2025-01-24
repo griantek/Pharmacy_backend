@@ -84,6 +84,25 @@ app.put('/delivery/orders/:orderId/status', verifyDeliveryToken, (req, res) => {
     res.json({ success: true });
   });
 });
+
+// Add payment status update endpoint for delivery
+app.put('/delivery/orders/:orderId/payment', verifyDeliveryToken, (req, res) => {
+  const { orderId } = req.params;
+  const { payment_status } = req.body;
+  
+  if (!['pending', 'paid'].includes(payment_status)) {
+    return res.status(400).send('Invalid payment status');
+  }
+
+  db.run('UPDATE orders SET payment_status = ? WHERE id = ?', [payment_status, orderId], (err) => {
+    if (err) {
+      console.error('Error updating payment status:', err.message);
+      return res.status(500).send('Error updating payment status');
+    }
+    res.json({ success: true });
+  });
+});
+
 // WhatsApp messaging endpoints
 app.post('/send-whatsapp-message', verifyAdminToken, async (req, res) => {
   const { phone, message } = req.body;
