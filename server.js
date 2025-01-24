@@ -624,6 +624,80 @@ app.put('/order/:orderId/payment-status', verifyAdminToken, (req, res) => {
     res.json({ success: true });
   });
 });
+
+// Get all delivery boys
+app.get('/admin/delivery-boys', verifyAdminToken, (req, res) => {
+  db.all('SELECT id, username, name, phone FROM delivery_boys', (err, rows) => {
+    if (err) {
+      console.error('Error fetching delivery boys:', err.message);
+      return res.status(500).send('Error fetching delivery boys');
+    }
+    res.json(rows);
+  });
+});
+// Add new delivery boy
+app.post('/admin/delivery-boys', verifyAdminToken, (req, res) => {
+  const { username, password, name, phone } = req.body;
+
+  if (!username || !password || !name || !phone) {
+    return res.status(400).send('All fields are required');
+  }
+
+  db.run(
+    'INSERT INTO delivery_boys (username, password, name, phone) VALUES (?, ?, ?, ?)',
+    [username, password, name, phone],
+    function(err) {
+      if (err) {
+        if (err.message.includes('UNIQUE constraint failed')) {
+          return res.status(400).send('Username already exists');
+        }
+        console.error('Error creating delivery boy:', err.message);
+        return res.status(500).send('Error creating delivery boy');
+      }
+      res.json({ id: this.lastID });
+    }
+  );
+});
+
+// Update delivery boy
+app.put('/admin/delivery-boys/:id', verifyAdminToken, (req, res) => {
+  const { id } = req.params;
+  const { username, password, name, phone } = req.body;
+
+  let query, params;
+  if (password) {
+    query = 'UPDATE delivery_boys SET username = ?, password = ?, name = ?, phone = ? WHERE id = ?';
+    params = [username, password, name, phone, id];
+  } else {
+    query = 'UPDATE delivery_boys SET username = ?, name = ?, phone = ? WHERE id = ?';
+    params = [username, name, phone, id];
+  }
+
+  db.run(query, params, function(err) {
+    if (err) {
+      if (err.message.includes('UNIQUE constraint failed')) {
+        return res.status(400).send('Username already exists');
+      }
+      console.error('Error updating delivery boy:', err.message);
+      return res.status(500).send('Error updating delivery boy');
+    }
+    res.json({ success: true });
+  });
+});
+
+// Delete delivery boy
+app.delete('/admin/delivery-boys/:id', verifyAdminToken, (req, res) => {
+  const { id } = req.params;
+
+  db.run('DELETE FROM delivery_boys WHERE id = ?', [id], function(err) {
+    if (err) {
+      console.error('Error deleting delivery boy:', err.message);
+      return res.status(500).send('Error deleting delivery boy');
+    }
+    res.json({ success: true });
+  });
+});
+
 // Start the server
 app.listen(PORT, () => {
   console.log(`Pharmacy app backend running on port ${PORT}`);
