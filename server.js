@@ -76,12 +76,21 @@ app.put('/delivery/orders/:orderId/status', verifyDeliveryToken, (req, res) => {
     return res.status(400).send('Invalid status');
   }
 
-  db.run('UPDATE orders SET status = ? WHERE id = ?', [status, orderId], (err) => {
+  db.get('SELECT payment_status FROM orders WHERE id = ?', [orderId], (err, order) => {
     if (err) {
-      console.error('Error updating order status:', err.message);
-      return res.status(500).send('Error updating status');
+      return res.status(500).send('Error checking order');
     }
-    res.json({ success: true });
+    
+    if (status === 'delivered' && order.payment_status !== 'paid') {
+      return res.status(400).send('Cannot mark as delivered until payment is received');
+    }
+
+    db.run('UPDATE orders SET status = ? WHERE id = ?', [status, orderId], (err) => {
+      if (err) {
+        return res.status(500).send('Error updating status');
+      }
+      res.json({ success: true });
+    });
   });
 });
 
