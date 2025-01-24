@@ -720,15 +720,56 @@ app.put('/admin/delivery-boys/:id/assign-order', verifyAdminToken, (req, res) =>
   const { id } = req.params;
   const { orderId } = req.body;
 
-  db.run('UPDATE delivery_boys SET current_order_id = ? WHERE id = ?', 
-    [orderId, id], 
-    function(err) {
-      if (err) {
-        console.error('Error assigning order:', err.message);
-        return res.status(500).send('Error assigning order');
-      }
-      res.json({ success: true });
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
+
+    db.run('UPDATE delivery_boys SET current_order_id = ? WHERE id = ?', 
+      [orderId, id], function(err) {
+        if (err) {
+          db.run('ROLLBACK');
+          console.error('Error assigning order:', err.message);
+          return res.status(500).send('Error assigning order');
+        }
+
+        db.run('UPDATE orders SET status = ? WHERE id = ?', 
+          ['dispatched', orderId], function(err) {
+            if (err) {
+              db.run('ROLLBACK');
+              console.error('Error updating order status:', err.message);
+              return res.status(500).send('Error updating order status');
+            }
+
+            db.run('COMMIT');
+            res.json({ success: true });
+        });
     });
+  });
+});
+
+// Add endpoint to get current order for delivery boy
+app.get('/delivery/current-order', verifyDeliveryToken, (req, res) => {
+  const deliveryBoyId = req.user.id;
+
+  db.get(`
+    SELECT 
+      d.current_order_id,
+      o.*,
+      m.name as medicine_name,
+      m.price as medicine_price
+    FROM delivery_boys d
+    LEFT JOIN orders o ON d.current_order_id = o.id
+    LEFT JOIN medicines m ON o.medicine_id = m.id
+    WHERE d.id = ?
+  `, [deliveryBoyId], (err, row) => {
+    if (err) {
+      console.error('Error fetching current order:', err.message);
+      return res.status(500).send('Error fetching current order');
+    }
+    if (!row?.current_order_id) {
+      return res.json(null);
+    }
+    res.json(row);
+  });
 });
 
 // Start the server
