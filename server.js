@@ -1,5 +1,5 @@
 // Backend for Pharmacy Web Application using SQLite
-
+require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const sqlite3 = require('sqlite3').verbose();
@@ -8,12 +8,43 @@ const multer = require('multer');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const secretKey = '123';
+const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 4000;
 
 // Middleware
 app.use(cors());
 app.use(bodyParser.json());
+
+const WHATSAPP_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
+
+
+// WhatsApp messaging endpoints
+app.post('/send-whatsapp-message', verifyAdminToken, async (req, res) => {
+  const { phone, message } = req.body;
+  
+  try {
+    await axios.post(
+      `${process.env.WHATSAPP_API_URL}`,
+      {
+        messaging_product: "whatsapp",
+        to: phone.replace(/[^0-9]/g, ''),
+        type: "text",
+        text: { body: message }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('WhatsApp API Error:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to send message' });
+  }
+});
 
 // Initialize SQLite Database
 const db = new sqlite3.Database('./pharmacy_booking.db', (err) => {
