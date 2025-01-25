@@ -853,6 +853,69 @@ app.get('/admin/feedbacks', verifyAdminToken, (req, res) => {
     res.json(rows);
   });
 });
+
+// Add delivery boy profile endpoint
+app.get('/delivery/profile', verifyDeliveryToken, (req, res) => {
+  const deliveryBoyId = req.user.id;
+
+  db.get(`
+    SELECT 
+      d.*,
+      COUNT(o.id) as total_deliveries,
+      ROUND(AVG(f.rating), 1) as avg_rating
+    FROM delivery_boys d
+    LEFT JOIN orders o ON d.id = (
+      SELECT delivery_boy_id 
+      FROM feedback 
+      WHERE order_id = o.id
+    )
+    LEFT JOIN feedback f ON d.id = f.delivery_boy_id
+    WHERE d.id = ?
+    GROUP BY d.id
+  `, [deliveryBoyId], (err, row) => {
+    if (err) {
+      console.error('Error fetching profile:', err.message);
+      return res.status(500).send('Error fetching profile');
+    }
+    if (!row) {
+      return res.status(404).send('Profile not found');
+    }
+    // Remove password from response
+    delete row.password;
+    res.json(row);
+  });
+});
+
+// Add password change endpoint
+app.put('/delivery/change-password', verifyDeliveryToken, (req, res) => {
+  const deliveryBoyId = req.user.id;
+  const { currentPassword, newPassword } = req.body;
+
+  db.get(
+    'SELECT password FROM delivery_boys WHERE id = ?',
+    [deliveryBoyId],
+    (err, row) => {
+      if (err) {
+        return res.status(500).send('Error checking password');
+      }
+      if (!row || row.password !== currentPassword) {
+        return res.status(401).send('Current password is incorrect');
+      }
+
+      db.run(
+        'UPDATE delivery_boys SET password = ? WHERE id = ?',
+        [newPassword, deliveryBoyId],
+        (err) => {
+          if (err) {
+            return res.status(500).send('Error updating password');
+          }
+          res.json({ success: true });
+        }
+      );
+    }
+  );
+});
+
 // Start the server
 app.listen(PORT, () => {
   console.log(`Pharmacy app backend running on port ${PORT}`);
