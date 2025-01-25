@@ -78,26 +78,59 @@ app.put('/delivery/orders/:orderId/status', verifyDeliveryToken, (req, res) => {
     return res.status(400).send('Invalid status');
   }
 
-  db.get('SELECT payment_status FROM orders WHERE id = ?', [orderId], (err, order) => {
-    if (err) {
-      return res.status(500).send('Error checking order');
-    }
-    
-    if (status === 'delivered' && order.payment_status !== 'paid') {
-      return res.status(400).send('Cannot mark as delivered until payment is received');
-    }
-    if (status === 'delivered') {
-      db.run('UPDATE delivery_boys SET current_order_id = NULL WHERE current_order_id = ?', 
-        [orderId]);
-    }
-
-    db.run('UPDATE orders SET status = ? WHERE id = ?', [status, orderId], (err) => {
+  db.get(`
+    SELECT o.payment_status, o.phone_number, d.id as delivery_boy_id 
+    FROM orders o
+    JOIN delivery_boys d ON d.current_order_id = o.id
+    WHERE o.id = ?`, 
+    [orderId], 
+    async (err, order) => {
       if (err) {
-        return res.status(500).send('Error updating status');
+        return res.status(500).send('Error checking order');
       }
-      res.json({ success: true });
+    
+      if (status === 'delivered' && order.payment_status !== 'paid') {
+        return res.status(400).send('Cannot mark as delivered until payment is received');
+      }
+
+      if (status === 'delivered') {
+        // Clear current order
+        db.run('UPDATE delivery_boys SET current_order_id = NULL WHERE current_order_id = ?', 
+          [orderId]);
+
+        // Send feedback request via WhatsApp
+        const feedbackUrl = `${process.env.FRONTEND_URL}/feedback?orderId=${orderId}&deliveryBoyId=${order.delivery_boy_id}`;
+        const message = `Thank you for choosing MedCare Pharmacy!\n\n` +
+                       `Please rate your delivery experience:\n${feedbackUrl}`;
+
+        try {
+          await axios.post(
+            `${process.env.WHATSAPP_API_URL}`,
+            {
+              messaging_product: "whatsapp",
+              to: order.phone_number,
+              type: "text",
+              text: { body: message }
+            },
+            {
+              headers: {
+                'Authorization': `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+        } catch (error) {
+          console.error('Error sending feedback request:', error);
+        }
+      }
+
+      db.run('UPDATE orders SET status = ? WHERE id = ?', [status, orderId], (err) => {
+        if (err) {
+          return res.status(500).send('Error updating status');
+        }
+        res.json({ success: true });
+      });
     });
-  });
 });
 
 // Add payment status update endpoint for delivery
