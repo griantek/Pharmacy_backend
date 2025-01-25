@@ -1,116 +1,263 @@
-// Backend and Bot Server for Pharmacy Booking System
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
-const mysql = require('mysql2');
+const sqlite3 = require('sqlite3').verbose();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
 app.use(bodyParser.json());
 
-// Database Connection (using MySQL for scalability on GCP)
-const db = mysql.createConnection({
-  host: 'localhost',
-  user: 'root',
-  password: 'password',
-  database: 'pharmacy_booking'
+// SQLite Database Connection
+const db = new sqlite3.Database('./pharmacy_booking.db', (err) => {
+  if (err) {
+    console.error('Error connecting to database:', err);
+    process.exit(1);
+  }
+  console.log('Connected to SQLite database.');
 });
 
-db.connect(err => {
-  if (err) throw err;
-  console.log('Connected to MySQL database.');
-});
-
-// WhatsApp Meta API Configuration
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 
-// WhatsApp Message Sender with Buttons
-const sendMessageWithButtons = async (phoneNumber, headerText, bodyText, buttons) => {
+// Helper Functions
+const sendWhatsAppMessage = async (phoneNumber, headerText, bodyText, buttons, type = 'button') => {
   try {
-    await axios.post(
-      `${process.env.WHATSAPP_API_URL}`,
-      {
-        messaging_product: 'whatsapp',
-        to: phoneNumber,
-        type: 'interactive',
-        interactive: {
-          type: 'button',
-          header: {
-            type: 'text',
-            text: headerText
-          },
-          body: {
-            text: bodyText
-          },
-          action: {
-            buttons: buttons
-          }
-        }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
+    const message = {
+      messaging_product: 'whatsapp',
+      to: phoneNumber,
+      type: 'interactive',
+      interactive: {
+        type,
+        header: { type: 'text', text: headerText },
+        body: { text: bodyText },
+        action: { buttons }
       }
-    );
-    console.log(`Buttons sent to ${phoneNumber}`);
+    };
+    
+    await axios.post(process.env.WHATSAPP_API_URL, message, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
   } catch (error) {
-    console.error('Error sending buttons:', error.response?.data || error.message);
+    console.error('Error sending message:', error);
   }
 };
 
-// Endpoint to Handle Incoming Webhooks
-app.post('/webhook', (req, res) => {
-  const { entry } = req.body;
-
-  if (entry && entry[0].changes && entry[0].changes[0].value.messages) {
-    const messages = entry[0].changes[0].value.messages;
-    messages.forEach(async message => {
-      const from = message.from;
-      const msgBody = message.text?.body.toLowerCase();
-
-      if (msgBody === 'hi') {
-        await sendMessageWithButtons(from, 'Welcome to Pharmacy Bot!', 'Select an option:', [
-          { type: 'reply', reply: { id: 'order_medicine', title: 'Order Medicine' } },
-          { type: 'reply', reply: { id: 'contact_support', title: 'Contact Support' } }
-        ]);
-      } else if (message.type === 'interactive' && message.interactive.button_reply.id === 'order_medicine') {
-        await sendMessageWithButtons(from, 'Order Medicine', 'Visit our web application to order medicines:', [
-          { type: 'url', reply: { id: 'web_link', title: 'Open Web App', url: 'https://pharmacy-booking.com' } }
-        ]);
-      } else if (message.type === 'interactive' && message.interactive.button_reply.id === 'contact_support') {
-        await sendMessageWithButtons(from, 'Contact Support', 'You can reach us via:', [
-          { type: 'reply', reply: { id: 'email_support', title: 'Email Support' } },
-          { type: 'reply', reply: { id: 'phone_support', title: 'Phone Support' } }
-        ]);
-      } else {
-        await sendMessageWithButtons(from, 'Invalid Option', 'Sorry, I did not understand that. Please try again:', [
-          { type: 'reply', reply: { id: 'restart', title: 'Start Over' } }
-        ]);
+const checkActiveOrder = (phoneNumber) => {
+  return new Promise((resolve, reject) => {
+    db.get(
+      `SELECT orders.*, medicines.name as medicine_name 
+       FROM orders 
+       JOIN medicines ON orders.medicine_id = medicines.id 
+       WHERE phone_number = ? AND status NOT IN ("cancelled", "delivered")
+       ORDER BY created_at DESC LIMIT 1`,
+      [phoneNumber],
+      (err, row) => {
+      if (err) reject(err);
+      resolve(row);
       }
-    });
-  }
+    );
+  });
+};
 
+const setOrderReminder = (phoneNumber) => {
+  setTimeout(async () => {
+    const order = await checkActiveOrder(phoneNumber);
+    if (!order) {
+      await sendWhatsAppMessage(
+        phoneNumber,
+        "Reminder",
+        "Don't forget to complete your order!",
+        [{ type: 'reply', reply: { id: 'order_now', title: 'Order Now' } }]
+      );
+    }
+  }, 600000); // 10 minutes
+};
+
+const cancelOrder = (orderId) => {
+  return new Promise((resolve, reject) => {
+    db.run('UPDATE orders SET status = ? WHERE id = ?', 
+    ['cancelled', orderId], 
+    (err) => {
+      if (err) reject(err);
+      resolve();
+    });
+  });
+};
+
+const sendOrderDetails = async (phoneNumber, order) => {
+  await sendWhatsAppMessage(
+    phoneNumber,
+    "Order Details",
+    `Order #${order.id}\n` +
+    `Medicine: ${order.medicine_name}\n` +
+    `Quantity: ${order.quantity}\n` +
+    `Status: ${order.status}\n` +
+    `Total: ₹${order.total_price}`,
+    []
+  );
+};
+
+// Webhook Handler
+app.post('/webhook', async (req, res) => {
+  const { entry } = req.body;
+  const phoneNumberId = req.body.entry?.[0]?.changes?.[0]?.value?.metadata?.phone_number_id;
+
+    // Check if the phone_number_id matches the chatbot's ID
+    if (phoneNumberId !== `${process.env.ID}`) {
+        console.log(`Ignoring message sent to phone_number_id: ${phoneNumberId}`);
+        return res.sendStatus(200); // Ignore the request
+    }
+
+  if (entry?.[0]?.changes?.[0]?.value?.messages) {
+    const message = entry[0].changes[0].value.messages[0];
+    const incomingMessage = req.body.entry[0].changes[0].value.messages[0];
+    const senderId = incomingMessage.phone; // WhatsApp ID (includes phone number)
+    const phone = senderId.replace('whatsapp:', ''); // Extract phone number
+    const userName = entry[0].changes[0].value.contacts?.[0]?.profile?.name || "Customer";
+    
+    try {
+      if (message.text?.body.toLowerCase() === 'hi') {
+        const activeOrder = await checkActiveOrder(phone);
+        
+        if (!activeOrder) {
+          await sendWhatsAppMessage(
+            phone,
+            `Welcome ${userName}!`,
+            "How can we help you today?",
+            [
+              { type: 'reply', reply: { id: 'new_order', title: 'Place Order' } },
+              { type: 'reply', reply: { id: 'contact_us', title: 'Contact Us' } }
+            ]
+          );
+        } else {
+          await sendWhatsAppMessage(
+            phone,
+            `Welcome back ${userName}!`,
+            "What would you like to do?",
+            [
+              { type: 'reply', reply: { id: 'view_order', title: 'View Order' } },
+              { type: 'reply', reply: { id: 'contact_us', title: 'Contact Us' } }
+            ]
+          );
+        }
+      } else if (message.interactive?.button_reply) {
+        const { id } = message.interactive.button_reply;
+        const activeOrder = await checkActiveOrder(phone);
+        
+        switch(id) {
+          case 'new_order':
+            await sendWhatsAppMessage(
+              phone,
+              "Order Medicines",
+              "Click below to place your order:",
+              [{ type: 'url', url: `${process.env.WEB_APP_URL}/order`, title: 'Order Now' }]
+            );
+            setOrderReminder(phone);
+            break;
+            
+          case 'view_order':
+            if (activeOrder) {
+              await sendWhatsAppMessage(
+                phone,
+                "Order Management",
+                "What would you like to do with your order?",
+                [
+                  { type: 'reply', reply: { id: 'modify_order', title: 'Modify Order' } },
+                  { type: 'reply', reply: { id: 'track_order', title: 'Track Order' } },
+                  { type: 'reply', reply: { id: 'cancel_order', title: 'Cancel Order' } }
+                ]
+              );
+            }
+            break;
+            
+          case 'modify_order':
+            if (activeOrder) {
+              await sendWhatsAppMessage(
+                phone,
+                "Modify Order",
+                "Click below to modify your order:",
+                [{ type: 'url', url: `${process.env.WEB_APP_URL}/modify/${activeOrder.id}`, title: 'Modify Order' }]
+              );
+            }
+            break;
+            
+          case 'track_order':
+            if (activeOrder) {
+              await sendOrderDetails(phone, activeOrder);
+            }
+            break;
+            
+          case 'cancel_order':
+            if (activeOrder) {
+              await sendWhatsAppMessage(
+                phone,
+                "Cancel Order",
+                "Are you sure you want to cancel your order?",
+                [
+                  { type: 'reply', reply: { id: 'confirm_cancel', title: 'Yes, Cancel' } },
+                  { type: 'reply', reply: { id: 'keep_order', title: 'No, Keep Order' } }
+                ]
+              );
+            }
+            break;
+            
+          case 'confirm_cancel':
+            if (activeOrder) {
+              await cancelOrder(activeOrder.id);
+              await sendWhatsAppMessage(
+                phone,
+                "Order Cancelled",
+                "Your order has been cancelled successfully.",
+                [{ type: 'reply', reply: { id: 'new_order', title: 'Place New Order' } }]
+              );
+            }
+            break;
+            
+          case 'contact_us':
+            await sendWhatsAppMessage(
+              phone,
+              "Contact Information",
+              "XL Pharmacy\nAddress: 123 Health Street\nPhone: +1234567890\nEmail: support@xlpharmacy.com",
+              [{ type: 'reply', reply: { id: 'show_location', title: 'Show Location' } }]
+            );
+            break;
+            
+          case 'show_location':
+            await axios.post(
+              process.env.WHATSAPP_API_URL,
+              {
+                messaging_product: 'whatsapp',
+                to: phone,
+                type: 'location',
+                location: {
+                  latitude: process.env.STORE_LATITUDE,
+                  longitude: process.env.STORE_LONGITUDE,
+                  name: "XL Pharmacy",
+                  address: "123 Health Street"
+                }
+              },
+              {
+                headers: {
+                  Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+                  'Content-Type': 'application/json'
+                }
+              }
+            );
+            break;
+        }
+      }
+    } catch (error) {
+      console.error('Error processing message:', error);
+    }
+  }
+  
   res.sendStatus(200);
 });
 
-// Endpoint to Test Database Connection
-app.get('/test-db', (req, res) => {
-  db.query('SELECT 1 + 1 AS solution', (err, results) => {
-    if (err) {
-      console.error('Database error:', err);
-      res.status(500).send('Database connection failed');
-    } else {
-      res.send(`Database connection successful: ${results[0].solution}`);
-    }
-  });
-});
-
-// Starting the Server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Bot server running on port ${PORT}`);
 });

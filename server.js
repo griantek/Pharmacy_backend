@@ -343,7 +343,7 @@ const sendOrderConfirmation = async (phone, orderId, medicineName, quantity, tot
     `Medicine: ${medicineName}\n` +
     `Quantity: ${quantity}\n` +
     `Total: ₹${totalPrice}\n\n` +
-    `We will verify your order and update you soon.`;
+    `We will deliver your order within a few hours.`;
 
   try {
     await axios.post(
