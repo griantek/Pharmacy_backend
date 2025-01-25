@@ -333,14 +333,45 @@ app.get('/availability/:medicineId', (req, res) => {
     res.json({ available: row && row.stock > 0 });
   });
 });
+// Add function to send WhatsApp order confirmation
+const sendOrderConfirmation = async (phone, orderId, medicineName, quantity, totalPrice, isModification = false) => {
+  const message = isModification ? 
+    `Your order #${orderId} has been updated:\n\n` :
+    `Thank you for your order #${orderId}!\n\n`;
 
+  const orderDetails = 
+    `Medicine: ${medicineName}\n` +
+    `Quantity: ${quantity}\n` +
+    `Total: ₹${totalPrice}\n\n` +
+    `We will verify your order and update you soon.`;
+
+  try {
+    await axios.post(
+      `${process.env.WHATSAPP_API_URL}`,
+      {
+        messaging_product: "whatsapp",
+        to: phone.replace(/[^0-9]/g, ''),
+        type: "text",
+        text: { body: message + orderDetails }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+  } catch (error) {
+    console.error('Error sending WhatsApp confirmation:', error);
+  }
+};
 // Place an order
 app.post('/order', upload.single('prescription'), (req, res) => {
   const { user_name, user_address, phone_number, medicine_id, quantity } = req.body;
   const prescriptionPhoto = req.file ? req.file.path : null;
 
   // Check medicine price and calculate total
-  db.get('SELECT category_id, stock, price FROM medicines WHERE id = ?', [medicine_id], (err, medicine) => {
+  db.get('SELECT name, stock, price FROM medicines WHERE id = ?', [medicine_id], (err, medicine) => {
     if (err) {
       console.error('Error checking medicine:', err.message);
       return res.status(500).send('Error checking medicine.');
@@ -362,12 +393,28 @@ app.post('/order', upload.single('prescription'), (req, res) => {
           console.error('Error placing order:', err.message);
           return res.status(500).send('Error placing order.');
         }
+
         // Update stock
-        db.run('UPDATE medicines SET stock = stock - ? WHERE id = ?', [quantity, medicine_id], (err) => {
+        db.run('UPDATE medicines SET stock = stock - ? WHERE id = ?', [quantity, medicine_id], async (err) => {
           if (err) {
             console.error('Error updating stock:', err.message);
             return res.status(500).send('Error updating stock.');
           }
+
+          try {
+            // Send WhatsApp confirmation
+            await sendOrderConfirmation(
+              phone_number, 
+              this.lastID, 
+              medicine.name, 
+              quantity, 
+              total_price
+            );
+          } catch (error) {
+            console.error('Error sending WhatsApp confirmation:', error);
+            // Continue with response even if WhatsApp fails
+          }
+          
           res.json({ success: true, orderId: this.lastID });
         });
       }
@@ -483,8 +530,8 @@ app.patch('/order/:orderId', upload.single('prescription'), (req, res) => {
     if (!order) return res.status(404).send('Order not found.');
     if (order.status !== 'Pending') return res.status(400).send('Only pending orders can be modified.');
 
-    // Get new medicine price if medicine changed
-    db.get('SELECT price FROM medicines WHERE id = ?', [medicine_id], (err, medicine) => {
+    // Get new medicine price and name if medicine changed
+    db.get('SELECT price, name FROM medicines WHERE id = ?', [medicine_id], (err, medicine) => {
       if (err) return res.status(500).send('Error fetching medicine.');
       if (!medicine) return res.status(404).send('Medicine not found.');
 
@@ -503,8 +550,22 @@ app.patch('/order/:orderId', upload.single('prescription'), (req, res) => {
                quantity = ?, prescription_photo = ?, total_price = ? WHERE id = ?`,
               [user_name, user_address, phone_number, medicine_id, quantity, 
                prescriptionPhoto || order.prescription_photo, total_price, orderId],
-              (err) => {
+              async (err) => {
                 if (err) return res.status(500).send('Error updating order.');
+                
+                try {
+                  await sendOrderConfirmation(
+                    phone_number,
+                    orderId,
+                    medicine.name,
+                    quantity,
+                    total_price,
+                    true // isModification flag
+                  );
+                } catch (error) {
+                  console.error('Error sending WhatsApp confirmation:', error);
+                }
+                
                 res.json({ success: true });
               }
             );
@@ -517,8 +578,22 @@ app.patch('/order/:orderId', upload.single('prescription'), (req, res) => {
            prescription_photo = ?, total_price = ? WHERE id = ?`,
           [user_name, user_address, phone_number, 
            prescriptionPhoto || order.prescription_photo, total_price, orderId],
-          (err) => {
+          async (err) => {
             if (err) return res.status(500).send('Error updating order.');
+            
+            try {
+              await sendOrderConfirmation(
+                phone_number,
+                orderId,
+                medicine.name,
+                quantity,
+                total_price,
+                true // isModification flag
+              );
+            } catch (error) {
+              console.error('Error sending WhatsApp confirmation:', error);
+            }
+            
             res.json({ success: true });
           }
         );
