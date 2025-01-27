@@ -79,11 +79,36 @@ const setOrderReminder = (phoneNumber) => {
 
 const cancelOrder = (orderId) => {
   return new Promise((resolve, reject) => {
-    db.run('UPDATE orders SET status = ? WHERE id = ?', 
-    ['cancelled', orderId], 
-    (err) => {
-      if (err) reject(err);
-      resolve();
+    // Fetch the order details
+    db.get('SELECT medicine_id, quantity FROM orders WHERE id = ?', [orderId], (err, row) => {
+      if (err) {
+        console.error('Error fetching order details:', err.message);
+        return reject(new Error('Error fetching order details.'));
+      }
+
+      if (!row) {
+        return reject(new Error('Order not found.'));
+      }
+
+      const { medicine_id, quantity } = row;
+
+      // Delete the order
+      db.run('DELETE FROM orders WHERE id = ?', [orderId], function (err) {
+        if (err) {
+          console.error('Error deleting order:', err.message);
+          return reject(new Error('Error deleting order.'));
+        }
+
+        // Restore the stock of the medicine
+        db.run('UPDATE medicines SET stock = stock + ? WHERE id = ?', [quantity, medicine_id], (err) => {
+          if (err) {
+            console.error('Error updating stock:', err.message);
+            return reject(new Error('Error updating stock.'));
+          }
+
+          resolve({ success: true });
+        });
+      });
     });
   });
 };
@@ -154,7 +179,7 @@ app.post('/webhook', async (req, res) => {
               phone,
               "Order Medicines",
               "Click below to place your order:",
-              [{ type: 'url', url: `${process.env.WEB_APP_URL}/order`, title: 'Order Now' }]
+              [{ type: 'url', url: `${process.env.WEB_APP_URL}/order?name=${userName}&phone=${phone}`, title: 'Order Now' }]
             );
             setOrderReminder(phone);
             break;
@@ -180,7 +205,7 @@ app.post('/webhook', async (req, res) => {
                 phone,
                 "Modify Order",
                 "Click below to modify your order:",
-                [{ type: 'url', url: `${process.env.WEB_APP_URL}/modify/${activeOrder.id}`, title: 'Modify Order' }]
+                [{ type: 'url', url: `${process.env.WEB_APP_URL}/modify?orderId=${activeOrder.id}`, title: 'Modify Order' }]
               );
             }
             break;
