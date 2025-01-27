@@ -175,11 +175,17 @@ app.post('/webhook', async (req, res) => {
         
         switch(id) {
           case 'new_order':
+            const token=await axios.get(`${process.env.BACKEND_URL}/generate-token`, {
+              params: {
+                  phone: phone,
+                  name: userName
+              }
+          });
             await sendWhatsAppMessage(
               phone,
               "Order Medicines",
               "Click below to place your order:",
-              [{ type: 'url', url: `${process.env.WEB_APP_URL}/order?name=${userName}&phone=${phone}`, title: 'Order Now' }]
+              [{ type: 'url', url: `${process.env.WEB_APP_URL}/order?token=${token}`, title: 'Order Now' }]
             );
             setOrderReminder(phone);
             break;
@@ -201,11 +207,16 @@ app.post('/webhook', async (req, res) => {
             
           case 'modify_order':
             if (activeOrder) {
+              const token=await axios.get(`${process.env.BACKEND_URL}/generate-token`, {
+                params: {
+                    orderId: activeOrder.id,
+                }
+            });
               await sendWhatsAppMessage(
                 phone,
                 "Modify Order",
                 "Click below to modify your order:",
-                [{ type: 'url', url: `${process.env.WEB_APP_URL}/modify?orderId=${activeOrder.id}`, title: 'Modify Order' }]
+                [{ type: 'url', url: `${process.env.WEB_APP_URL}/modify?token=${token}`, title: 'Modify Order' }]
               );
             }
             break;

@@ -991,6 +991,68 @@ app.put('/delivery/change-password', verifyDeliveryToken, (req, res) => {
   );
 });
 
+// Middleware to clean up expired tokens periodically
+setInterval(() => {
+  console.log(tokenStore)
+  const now = Date.now();
+  for (const token in tokenStore) {
+    if (tokenStore[token].expiresAt < now) {
+      delete tokenStore[token]; // Remove expired token
+    }
+  }  
+}, 60000); // Run cleanup every minute
+
+// Helper function to generate an 8-character random alphanumeric token
+function generateSimpleToken() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let token = "";
+  for (let i = 0; i < 8; i++) {
+      token += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return token;
+}
+// In-memory storage for tokens (key-value store: token -> phone)
+const tokenStore = {};  
+// Updated /generate-token
+app.get("/generate-token", (req, res) => {
+  const { phone, name, orderId } = req.query;
+  
+  try {
+    const token = generateSimpleToken(); // Generate a token
+    const expiresAt = Date.now() + 10 * 60 * 1000; // Set expiration time to 10 minutes from now
+    tokenStore[token] = { phone, name, orderId, expiresAt }; // Store token with both phone and name
+    console.log("token generated")
+    console.log(tokenStore)
+    res.json({ token });
+    
+  } catch (error) {
+    console.error("Error generating token:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+// Updated /validate-token
+app.get("/validate-token", (req, res) => {
+  const { token } = req.query;
+  if (!token) return res.status(400).json({ error: "Token is required" });
+  try {
+    const data = tokenStore[token]; // Retrieve phone and name using token
+    console.log("token retrieved")
+    if (!data) throw new Error("Token not found");
+
+    // Check if token is expired
+    if (Date.now() > data.expiresAt) {
+      delete tokenStore[token]; // Remove expired token
+      throw new Error("Token has expired");
+    }
+
+    res.json(data); // Respond with phone and name
+  } catch (error) {
+    console.error("Invalid token:", error);
+    console.log("token retrieved")
+    res.status(401).json({ error: "Invalid or expired token" });
+  }
+});
+
 // Start the server
 app.listen(PORT, () => {
   console.log(`Pharmacy app backend running on port ${PORT}`);
